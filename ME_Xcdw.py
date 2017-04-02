@@ -53,7 +53,6 @@ with open(sys.argv[1],'r') as f:
     omega  = parse_line(f)
     superconductivity = parse_line(f)
     mu = parse_line(f)
-    q0     = parse_line(f)
 f.close()
 
 #savedir = sys.argv[2]
@@ -94,28 +93,18 @@ q0    = 2*pi*q0
 iter_selfconsistency = 300
 
 kxs, kys  = init_momenta(Nk)
-gofq      = init_gofq(kxs, kys, Nk, g, q0)
 iw_bose   = init_boson_freq(Nw, beta)
 iw_fermi  = init_fermion_freq(Nw, beta)
 band      = init_band(kxs, kys, Nk, mu)
 D         = init_D(Nw, beta, omega, iw_bose)
 
-#now do the same calculation but with the FFT
-#G         = init_G(Nk, Nw, beta, omega, band, kxs, kys, iw_fermi, superconductivity)
-#G         = load("data/G.npy")
-
-G         = zeros([Nk,Nk,Nw,2,2], dtype=complex)
-G_proc    = zeros([Nk,Nk,Nw,2,2], dtype=complex)
-Conv      = zeros([Nk,Nk,2,2], dtype=complex)
-Sigma     = zeros([Nk,Nk,Nw,2,2], dtype=complex)
-
-fft_gofq2 = fft.fft2(gofq**2)
+Sigma     = zeros([Nw,2,2], dtype=complex)
 
 change = ones([2,2], dtype=complex)
 
 if superconductivity:
-    Sigma[:,:,:,0,1] = 0.01*1j
-    Sigma[:,:,:,1,0] = 0.01*1j
+    Sigma[:,0,1] = 0.01*1j
+    Sigma[:,1,0] = 0.01*1j
 
 
 if os.path.exists(savedir+'Sigma.npy'):
@@ -127,7 +116,8 @@ if os.path.exists(savedir+'Sigma.npy'):
 for myiter in range(iter_selfconsistency):
     if abs(change[0,0]) < 1e-10:
         break
-    
+
+    Gloc = zeros([Nw,2,2], dtype=complex)
     #compute new G
     for ik1 in range(Nk):
         for ik2 in range(Nk):
@@ -135,39 +125,30 @@ for myiter in range(iter_selfconsistency):
             for n in range(Nw):
                 iwn = iw_fermi[n]
                 
-                G_proc[ik1,ik2,n,:,:] = linalg.inv(iwn*tau0 - band[ik1,ik2]*tau3 - Sigma[ik1,ik2,n,:,:])
+                Gloc[n,:,:] = linalg.inv(iwn*tau0 - band[ik1,ik2]*tau3 - Sigma[n,:,:])
 
-    G = zeros([Nk,Nk,Nw,2,2], dtype=complex)
-    G = G_proc
     #comm.Allreduce(G_proc, G, op=MPI.SUM)
 
     
     Sigma_old = Sigma.copy()
-    Sigma_proc = zeros([Nk,Nk,Nw,2,2], dtype=complex)
-    Sigma = zeros([Nk,Nk,Nw,2,2], dtype=complex)
+    Sigma = zeros([Nw,2,2], dtype=complex)
     
     #compute new Sigma    
     change = zeros([2,2], dtype=complex)
 
     for m in range(Nw): ### check this bound. it was n
-        fft_G = fft.fft2(einsum('ij,abjk,kl->abil',tau3,G[:,:,m,:,:],tau3), axes=(0,1))
+        #fft_G = fft.fft2(einsum('ij,abjk,kl->abil',tau3,G[:,:,m,:,:],tau3), axes=(0,1))
 
         for n in range(Nw): 
             n_m = subtract_freqs(n,m,Nw)
                             
             if(n_m>=0 and n_m<Nw-1):
 
-                Conv = 1.0/(Nk**2)/beta * D[n_m] * fft.ifft2( einsum('ij,ijab->ijab', fft_gofq2 , fft_G) , axes=(0,1))
-                Conv = roll(Conv, -Nk/2, axis=0)
-                Conv = roll(Conv, -Nk/2, axis=1)
-
-                Sigma_proc[:,:,n,:,:] -= Conv
+                Sigma -= 1.0/(Nk**2)/beta * g**2 * D[n_m] * einsum('ij,jk,kl->il',tau3,Gloc[m,:,:],tau3)
                                     
-    Sigma = Sigma_proc
-    #comm.Allreduce(Sigma_proc, Sigma, op=MPI.SUM)
     
-    change += einsum('ijklm->lm',abs(Sigma-Sigma_old))/Nk**2
-    dens = abs(1.0 + 2.0*einsum('ijk->',G[:,:,:,0,0])/Nk**2/beta)
+    change += einsum('klm->lm',abs(Sigma-Sigma_old))
+    dens = abs(1.0 + 2.0*einsum('i->',Gloc[:,0,0])/beta)
     
     if myrank==0:
         print " "
@@ -178,7 +159,7 @@ for myiter in range(iter_selfconsistency):
 
         
 if myrank==0:
-    save(savedir+"GM.npy", G)
+    save(savedir+"Gloc.npy", Gloc)
     save(savedir+"Sigma.npy", Sigma)    
     savetxt(savedir+"dens",[dens])
     print "---------------------------"
@@ -186,6 +167,7 @@ if myrank==0:
     print "Done with Migdal piece"
     print "Starting X calculation"
     print " "
+
 
 1./0
 
